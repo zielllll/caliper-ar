@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Caliper — camera measurement (no AR)</title>
+<style>
+  :root{
+    --bg:#0c0e11; --panel:#14171c; --line:#262b33;
+    --ink:#e8ebef; --muted:#8a929e;
+    --ref:#38e08a; --obj:#ffb648; --danger:#ff5c5c;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);}
+  body{display:flex;flex-direction:column;overscroll-behavior:none;}
+  header{padding:9px 13px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;}
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.02em;}
+  header .sub{font-size:11px;color:var(--muted);font-family:var(--mono);}
+  #lockbadge{margin-left:auto;font-size:11px;font-family:var(--mono);color:var(--muted);}
+  #lockbadge.on{color:var(--ref);}
+
+  .stage{position:relative;flex:1;min-height:0;background:#000;overflow:hidden;}
+  #video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;}
+  #canvas{position:absolute;inset:0;touch-action:none;width:100%;height:100%;display:none;}
+  .stage.frozen #video{display:none;}
+  .stage.frozen #canvas{display:block;}
+  .center-note{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    text-align:center;padding:24px;color:var(--muted);font-size:13px;line-height:1.6;pointer-events:none;}
+
+  #loupe{position:absolute;width:118px;height:118px;border-radius:50%;
+    border:2px solid var(--ink);box-shadow:0 4px 18px rgba(0,0,0,.6);
+    pointer-events:none;display:none;z-index:9;background:#000;overflow:hidden;}
+  #loupe canvas{width:100%;height:100%;}
+
+  #readout{position:absolute;left:12px;top:12px;z-index:5;
+    background:rgba(12,14,17,.74);backdrop-filter:blur(6px);
+    border:1px solid var(--line);border-radius:10px;padding:9px 12px;
+    font-family:var(--mono);min-width:150px;pointer-events:none;}
+  #readout .lab{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}
+  #readout .val{font-size:25px;font-weight:600;color:var(--obj);line-height:1.15;}
+  #readout .cal{font-size:11px;margin-top:6px;color:var(--ref);}
+  #readout .cal.none{color:var(--danger);}
+
+  .controls{border-top:1px solid var(--line);background:var(--panel);padding:9px 12px;display:flex;flex-direction:column;gap:9px;}
+  .row{display:flex;gap:7px;flex-wrap:wrap;align-items:center;}
+  .grow{flex:1 1 auto;}
+  label.field{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted);}
+  select,input[type=number]{background:var(--bg);color:var(--ink);border:1px solid var(--line);
+    border-radius:8px;padding:8px 9px;font-family:var(--mono);font-size:13px;min-width:0;}
+  input[type=number]{width:86px;}
+  button{border:1px solid var(--line);background:#1d222a;color:var(--ink);border-radius:8px;
+    padding:10px 13px;font-size:13px;font-weight:600;cursor:pointer;}
+  button:active{filter:brightness(1.2);} button:disabled{opacity:.4;}
+  button.primary{background:var(--obj);color:#1a1205;border-color:transparent;}
+  button.go{background:var(--ref);color:#04160b;border-color:transparent;}
+  button.ghost{background:transparent;}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .seg button{border:0;border-radius:0;background:transparent;padding:8px 12px;font-weight:500;}
+  .seg button.ref.on{background:var(--ref);color:#04160b;}
+  .seg button.obj.on{background:var(--obj);color:#1a1205;}
+  .hint{font-size:11px;color:var(--muted);line-height:1.5;font-family:var(--mono);}
+  .hint b{color:var(--ink);} .warn{color:var(--obj);}
+  input[type=file]{display:none;}
+</style>
+</head>
+<body>
+<header>
+  <h1>Caliper</h1>
+  <span class="sub">camera measurement · no AR needed</span>
+  <span id="lockbadge">scale not set</span>
+</header>
+
+<div class="stage" id="stage">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="canvas"></canvas>
+  <div class="center-note" id="cnote">Starting camera… allow access when asked.<br>Or use “Upload photo”.</div>
+  <div id="loupe"><canvas id="loupeC" width="236" height="236"></canvas></div>
+  <div id="readout">
+    <div class="lab" id="rLab">object length</div>
+    <div class="val" id="rVal">—</div>
+    <div class="cal none" id="rCal">no scale yet</div>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="row" id="liveRow">
+    <button class="go grow" id="btnFreeze">Freeze &amp; measure</button>
+    <button class="ghost" id="btnFlip">Flip</button>
+    <button class="ghost" id="btnUpload">Upload photo</button>
+  </div>
+
+  <div class="row" id="measureRow" style="display:none">
+    <label class="field">reference
+      <select id="refType">
+        <option value="85.6">card long side (85.6 mm)</option>
+        <option value="53.98">card short side (54 mm)</option>
+        <option value="custom">custom…</option>
+      </select>
+    </label>
+    <label class="field" id="customWrap" style="display:none">mm
+      <input type="number" id="refMM" value="85.6" step="0.1" min="1" />
+    </label>
+    <div class="seg">
+      <button class="ref on" id="tRef">① Reference</button>
+      <button class="obj" id="tObj">② Object</button>
+    </div>
+  </div>
+
+  <div class="row" id="measureRow2" style="display:none">
+    <button class="go" id="btnLock">Lock scale</button>
+    <button class="ghost" id="btnUndo">Undo</button>
+    <button class="ghost" id="btnClear">Clear</button>
+    <button class="ghost" id="btnSave">Save</button>
+    <button class="primary grow" id="btnRetake">Retake</button>
+  </div>
+
+  <div class="hint" id="hint">
+    Point the camera at your object with a card beside it, then <b>Freeze &amp; measure</b>.
+    Tap the two ends of the card (green), switch to <span style="color:var(--obj)">② Object</span>, tap its two ends.
+    <span class="warn">Reference &amp; object must be flat, same distance, camera square-on.</span>
+  </div>
+</div>
+
+<input type="file" id="file" accept="image/*" capture="environment" />
+
+<script>
+const LKEY = 'caliper_scale_v1';
+const S = {
+  stream:null, facing:'environment',
+  bmp:null, natW:0, natH:0,
+  view:{scale:1, tx:0, ty:0},
+  target:'ref', ref:[], obj:[], pxPerMm:null,
+  refMM:85.6, locked:false, lockW:0,
+  pointers:new Map(), placing:false, provisional:null, pinchPrev:null,
+};
+const $=id=>document.getElementById(id);
+const els={
+  stage:$('stage'), video:$('video'), canvas:$('canvas'), cnote:$('cnote'),
+  loupe:$('loupe'), loupeC:$('loupeC'), file:$('file'),
+  liveRow:$('liveRow'), measureRow:$('measureRow'), measureRow2:$('measureRow2'),
+  btnFreeze:$('btnFreeze'), btnFlip:$('btnFlip'), btnUpload:$('btnUpload'),
+  btnLock:$('btnLock'), btnUndo:$('btnUndo'), btnClear:$('btnClear'), btnSave:$('btnSave'), btnRetake:$('btnRetake'),
+  refType:$('refType'), refMM:$('refMM'), customWrap:$('customWrap'),
+  tRef:$('tRef'), tObj:$('tObj'),
+  rLab:$('rLab'), rVal:$('rVal'), rCal:$('rCal'), hint:$('hint'), lockbadge:$('lockbadge'),
+};
+const ctx=els.canvas.getContext('2d');
+const lctx=els.loupeC.getContext('2d');
+let dpr=Math.min(window.devicePixelRatio||1, 2.5);
+
+/* ---------- restore locked scale ---------- */
+try{
+  const raw=localStorage.getItem(LKEY);
+  if(raw){ const o=JSON.parse(raw); if(o&&o.pxPerMm){ S.pxPerMm=o.pxPerMm; S.lockW=o.w||0; S.locked=true; } }
+}catch(e){}
+
+/* ---------- camera ---------- */
+async function startCamera(){
+  stopCamera();
+  try{
+    S.stream=await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:S.facing, width:{ideal:1920}, height:{ideal:1080} }, audio:false });
+    els.video.srcObject=S.stream; await els.video.play();
+    els.cnote.style.display='none';
+  }catch(e){
+    els.cnote.innerHTML='Camera unavailable ('+(e.name||'error')+').<br>Tap <b>Upload photo</b> to measure from a picture instead.';
+    els.cnote.style.display='';
+  }
+}
+function stopCamera(){ if(S.stream){ S.stream.getTracks().forEach(t=>t.stop()); S.stream=null; } }
+
+/* ---------- freeze / load ---------- */
+function freezeFromVideo(){
+  const w=els.video.videoWidth, h=els.video.videoHeight;
+  if(!w||!h){ return; }
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  c.getContext('2d').drawImage(els.video,0,0,w,h);
+  useImage(c,w,h);
+}
+async function loadFile(file){
+  if(!file) return;
+  let bmp,w,h;
+  try{ bmp=await createImageBitmap(file,{imageOrientation:'from-image'}); w=bmp.width; h=bmp.height; }
+  catch(e){ const img=new Image(); img.src=URL.createObjectURL(file); await img.decode(); bmp=img; w=img.naturalWidth; h=img.naturalHeight; }
+  useImage(bmp,w,h);
+}
+function useImage(bmp,w,h){
+  S.bmp=bmp; S.natW=w; S.natH=h; S.ref=[]; S.obj=[]; S.provisional=null;
+  // if a locked scale exists, adapt it to this frame width (same camera/FOV assumption)
+  if(S.locked && S.lockW>0){ S.pxPerMm = S.pxPerMm * (w / S.lockW); S.lockW = w; }
+  els.stage.classList.add('frozen');
+  els.liveRow.style.display='none';
+  els.measureRow.style.display=S.locked?'none':'';
+  els.measureRow2.style.display='';
+  setTarget(S.locked?'object':'ref');
+  resize(); fitImage(); render(); updateReadout();
+  els.hint.innerHTML = S.locked
+    ? '<b>Scale locked.</b> Tap the two ends of the object. Keep the camera at the same distance you calibrated at. <b>Recalibrate</b> if distance changed.'
+    : '<b>Set scale:</b> tap the two ends of your reference ('+S.refMM+' mm), then switch to ② Object and tap its two ends.';
+}
+function retake(){
+  els.stage.classList.remove('frozen');
+  els.liveRow.style.display=''; els.measureRow.style.display='none'; els.measureRow2.style.display='none';
+  S.bmp=null; S.ref=[]; S.obj=[]; S.provisional=null;
+  octxClear();
+  if(!S.stream) startCamera();
+}
+
+/* ---------- canvas sizing + transforms ---------- */
+function resize(){ els.canvas.width=Math.round(els.canvas.clientWidth*dpr); els.canvas.height=Math.round(els.canvas.clientHeight*dpr); }
+function fitImage(){ const w=els.canvas.clientWidth,h=els.canvas.clientHeight,s=Math.min(w/S.natW,h/S.natH);
+  S.view.scale=s; S.view.tx=(w-S.natW*s)/2; S.view.ty=(h-S.natH*s)/2; }
+function fitScale(){ return Math.min(els.canvas.clientWidth/S.natW, els.canvas.clientHeight/S.natH); }
+function toImage(sx,sy){ return {x:(sx-S.view.tx)/S.view.scale, y:(sy-S.view.ty)/S.view.scale}; }
+function toScreen(ix,iy){ return {x:ix*S.view.scale+S.view.tx, y:iy*S.view.scale+S.view.ty}; }
+function octxClear(){ ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,els.canvas.width,els.canvas.height); }
+window.addEventListener('resize',()=>{ if(S.bmp){ resize(); render(); } });
+
+/* ---------- render ---------- */
+function render(){
+  ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,els.canvas.width,els.canvas.height);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  if(!S.bmp) return;
+  ctx.drawImage(S.bmp,0,0,S.natW,S.natH,S.view.tx,S.view.ty,S.natW*S.view.scale,S.natH*S.view.scale);
+  drawSet(S.ref,cssv('--ref'),'REF',S.refMM);
+  drawSet(S.obj,cssv('--obj'),'OBJ',null);
+  if(S.provisional){ const p=toScreen(S.provisional.x,S.provisional.y);
+    ctx.strokeStyle=S.target==='ref'?cssv('--ref'):cssv('--obj'); ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(p.x-14,p.y);ctx.lineTo(p.x+14,p.y);ctx.moveTo(p.x,p.y-14);ctx.lineTo(p.x,p.y+14); ctx.stroke(); }
+}
+function drawSet(pts,color,tag,knownMM){
+  ctx.fillStyle=color; ctx.strokeStyle=color;
+  pts.forEach(p=>{ const s=toScreen(p.x,p.y); ctx.beginPath(); ctx.arc(s.x,s.y,6,0,7); ctx.fill(); });
+  if(pts.length===2){ const a=toScreen(pts[0].x,pts[0].y), b=toScreen(pts[1].x,pts[1].y);
+    ctx.lineWidth=2.5; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    const dpx=Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y);
+    let lab=tag; if(knownMM!=null) lab=tag+' '+knownMM+'mm'; else if(S.pxPerMm) lab=tag+' '+fmt(dpx/S.pxPerMm)+'mm';
+    ctx.font='600 15px '+getComputedStyle(document.body).fontFamily;
+    ctx.fillText(lab,(a.x+b.x)/2+8,(a.y+b.y)/2-8); }
+}
+
+/* ---------- loupe ---------- */
+function showLoupe(imgPt,screenPt){
+  const R=40, box=els.stage.getBoundingClientRect();
+  let lx=screenPt.x-59, ly=screenPt.y-138; if(ly<8) ly=screenPt.y+20;
+  lx=Math.max(6,Math.min(box.width-124,lx));
+  els.loupe.style.left=lx+'px'; els.loupe.style.top=ly+'px'; els.loupe.style.display='block';
+  lctx.setTransform(1,0,0,1,0,0); lctx.clearRect(0,0,236,236);
+  try{ lctx.drawImage(S.bmp,imgPt.x-R,imgPt.y-R,2*R,2*R,0,0,236,236); }catch(e){}
+  lctx.strokeStyle=cssv('--ink'); lctx.lineWidth=1.5;
+  lctx.beginPath(); lctx.moveTo(118,94);lctx.lineTo(118,142);lctx.moveTo(94,118);lctx.lineTo(142,118); lctx.stroke();
+  lctx.strokeStyle=S.target==='ref'?cssv('--ref'):cssv('--obj'); lctx.beginPath(); lctx.arc(118,118,4,0,7); lctx.stroke();
+}
+function hideLoupe(){ els.loupe.style.display='none'; }
+
+/* ---------- pointer ---------- */
+function evtXY(e){ const r=els.canvas.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; }
+els.canvas.addEventListener('pointerdown',e=>{
+  if(!S.bmp) return; els.canvas.setPointerCapture(e.pointerId); S.pointers.set(e.pointerId,evtXY(e));
+  if(S.pointers.size===1){ const p=evtXY(e); S.placing=true; S.provisional=toImage(p.x,p.y); showLoupe(S.provisional,p); render(); }
+  else{ S.placing=false; S.provisional=null; hideLoupe(); S.pinchPrev=pinchState(); render(); }
+});
+els.canvas.addEventListener('pointermove',e=>{
+  if(!S.pointers.has(e.pointerId)) return; S.pointers.set(e.pointerId,evtXY(e));
+  if(S.pointers.size===1&&S.placing){ const p=evtXY(e); S.provisional=toImage(p.x,p.y); showLoupe(S.provisional,p); render(); }
+  else if(S.pointers.size>=2){ const cur=pinchState();
+    if(S.pinchPrev){ const ratio=cur.dist/S.pinchPrev.dist, ns=clamp(S.view.scale*ratio,fitScale()*0.5,fitScale()*40), mid=cur.mid, u=toImage(mid.x,mid.y);
+      S.view.scale=ns; S.view.tx=mid.x-u.x*ns+(cur.mid.x-S.pinchPrev.mid.x); S.view.ty=mid.y-u.y*ns+(cur.mid.y-S.pinchPrev.mid.y); }
+    S.pinchPrev=cur; render(); }
+});
+function endPointer(e){
+  if(!S.pointers.has(e.pointerId)) return;
+  const was=S.placing&&S.pointers.size===1; S.pointers.delete(e.pointerId);
+  if(was&&S.provisional) commitPoint(S.provisional);
+  if(S.pointers.size<2) S.pinchPrev=null;
+  if(S.pointers.size===0){ S.placing=false; S.provisional=null; hideLoupe(); }
+  render();
+}
+els.canvas.addEventListener('pointerup',endPointer);
+els.canvas.addEventListener('pointercancel',endPointer);
+function pinchState(){ const p=[...S.pointers.values()]; return {dist:Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y),mid:{x:(p[0].x+p[1].x)/2,y:(p[0].y+p[1].y)/2}}; }
+
+/* ---------- measurement ---------- */
+function commitPoint(p){ const set=S.target==='ref'?S.ref:S.obj; if(set.length>=2) set.length=0; set.push({x:p.x,y:p.y}); recompute(); }
+function recompute(){
+  if(!S.locked && S.ref.length===2){ const d=Math.hypot(S.ref[0].x-S.ref[1].x,S.ref[0].y-S.ref[1].y); S.pxPerMm=d/S.refMM; }
+  updateReadout(); render();
+}
+function updateReadout(){
+  if(S.pxPerMm){ els.rCal.textContent=(S.locked?'locked ':'')+S.pxPerMm.toFixed(2)+' px/mm'; els.rCal.className='cal'; }
+  else{ els.rCal.textContent='set reference first'; els.rCal.className='cal none'; }
+  els.lockbadge.textContent=S.locked?'scale locked':(S.pxPerMm?'scale set':'scale not set');
+  els.lockbadge.className=S.locked?'on':'';
+  els.btnLock.textContent=S.locked?'Recalibrate':'Lock scale';
+  if(S.obj.length===2&&S.pxPerMm){ const d=Math.hypot(S.obj[0].x-S.obj[1].x,S.obj[0].y-S.obj[1].y);
+    els.rLab.textContent='object length'; els.rVal.textContent=fmt(d/S.pxPerMm)+' mm'; }
+  else if(S.target==='ref'&&!S.locked){ els.rLab.textContent='reference'; els.rVal.textContent=S.ref.length===2?S.refMM+' mm':'—'; }
+  else{ els.rLab.textContent='object length'; els.rVal.textContent='—'; }
+}
+function setTarget(t){ S.target=t; els.tRef.classList.toggle('on',t==='ref'); els.tObj.classList.toggle('on',t==='object'); updateReadout(); }
+
+/* ---------- lock / persist ---------- */
+function lockScale(){
+  if(S.locked){ // recalibrate
+    S.locked=false; try{ localStorage.removeItem(LKEY); }catch(e){}
+    els.measureRow.style.display=''; setTarget('ref');
+    els.hint.innerHTML='<b>Recalibrating.</b> Tap the two ends of your reference again, then Lock.';
+    updateReadout(); return;
+  }
+  if(!S.pxPerMm){ els.hint.innerHTML='<span style="color:var(--danger)">Set a reference first (tap its two ends), then Lock.</span>'; return; }
+  S.locked=true; S.lockW=S.natW;
+  try{ localStorage.setItem(LKEY, JSON.stringify({pxPerMm:S.pxPerMm, w:S.natW})); }catch(e){}
+  els.measureRow.style.display='none'; setTarget('object');
+  els.hint.innerHTML='<b>Scale locked</b> and saved. From now on just Freeze and tap the object — no reference needed, as long as you keep the same camera distance. <span class="warn">Change distance → Recalibrate.</span>';
+  updateReadout();
+}
+
+/* ---------- save ---------- */
+function saveImage(){
+  if(!S.bmp) return;
+  const c=document.createElement('canvas'); c.width=S.natW; c.height=S.natH; const x=c.getContext('2d');
+  x.drawImage(S.bmp,0,0,S.natW,S.natH);
+  const draw=(pts,color,text)=>{ x.fillStyle=color; x.strokeStyle=color; x.lineWidth=Math.max(2,S.natW/400);
+    pts.forEach(p=>{ x.beginPath(); x.arc(p.x,p.y,Math.max(4,S.natW/220),0,7); x.fill(); });
+    if(pts.length===2){ x.beginPath(); x.moveTo(pts[0].x,pts[0].y); x.lineTo(pts[1].x,pts[1].y); x.stroke();
+      x.font='600 '+Math.max(16,S.natW/45)+'px sans-serif'; x.fillText(text,(pts[0].x+pts[1].x)/2+8,(pts[0].y+pts[1].y)/2-8); } };
+  if(!S.locked) draw(S.ref,cssv('--ref'),S.refMM+' mm ref');
+  let t='object'; if(S.obj.length===2&&S.pxPerMm){ const d=Math.hypot(S.obj[0].x-S.obj[1].x,S.obj[0].y-S.obj[1].y); t=fmt(d/S.pxPerMm)+' mm'; }
+  draw(S.obj,cssv('--obj'),t);
+  const a=document.createElement('a'); a.download='measurement.png'; a.href=c.toDataURL('image/png'); a.click();
+}
+
+/* ---------- utils ---------- */
+function fmt(v){ return v>=100?v.toFixed(0):v.toFixed(1); }
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function cssv(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+/* ---------- wire ---------- */
+els.btnFreeze.onclick=freezeFromVideo;
+els.btnFlip.onclick=()=>{ S.facing=S.facing==='environment'?'user':'environment'; startCamera(); };
+els.btnUpload.onclick=()=>els.file.click();
+els.file.onchange=e=>loadFile(e.target.files[0]);
+els.btnRetake.onclick=retake;
+els.btnLock.onclick=lockScale;
+els.btnUndo.onclick=()=>{ const set=S.target==='ref'?S.ref:S.obj; set.pop(); recompute(); };
+els.btnClear.onclick=()=>{ S.ref=[]; S.obj=[]; if(!S.locked) S.pxPerMm=null; recompute(); };
+els.btnSave.onclick=saveImage;
+els.tRef.onclick=()=>setTarget('ref');
+els.tObj.onclick=()=>setTarget('object');
+els.refType.onchange=()=>{ if(els.refType.value==='custom'){ els.customWrap.style.display=''; S.refMM=parseFloat(els.refMM.value)||85.6; }
+  else{ els.customWrap.style.display='none'; S.refMM=parseFloat(els.refType.value); } recompute(); };
+els.refMM.oninput=()=>{ S.refMM=parseFloat(els.refMM.value)||85.6; recompute(); };
+
+updateReadout();
+startCamera();
+</script>
+</body>
+</html>
